@@ -1,0 +1,285 @@
+#!/bin/sh
+# battery-mode — manage laptop battery charge limits with named presets
+#
+# Two kernel interfaces are supported, detected per battery:
+#
+#   thresholds  /sys/class/power_supply/BAT*/charge_control_{start,end}_threshold
+#               Arbitrary percentages. Most ThinkPads, Framework, many ASUS.
+#   types       /sys/class/power_supply/BAT*/charge_types with Long_Life
+#               On/off conservation mode; the firmware picks the cap.
+#               Lenovo IdeaPad/Yoga (ideapad_laptop), some others.
+#
+# Modes:
+#   save      40%-80%   long battery life   (types: Long_Life)
+#   balanced  60%-90%   more capacity       (thresholds only)
+#   full      0%-100%   max capacity        (types: Standard)
+#   N M       custom start/end percentages  (thresholds only)
+#
+# Settings persist via /etc/battery-mode.conf, restored by
+# battery-mode-restore.service at boot.
+
+set -eu
+
+CONF=${BATTERY_MODE_CONF:-/etc/battery-mode.conf}
+PS_DIR=${BATTERY_MODE_SYSFS:-/sys/class/power_supply}
+
+die() {
+    code=$1
+    shift
+    for line in "$@"; do echo "battery-mode: $line" >&2; done
+    exit "$code"
+}
+
+# Integer in 0..100
+is_pct() {
+    case $1 in ''|*[!0-9]*|0?*) return 1 ;; esac
+    [ "$1" -le 100 ]
+}
+
+# Echo the interface a battery offers: thresholds, types, or none
+backend_of() {
+    if [ -e "$PS_DIR/$1/charge_control_end_threshold" ]; then
+        echo thresholds
+    elif grep -q 'Long_Life' "$PS_DIR/$1/charge_types" 2>/dev/null; then
+        echo types
+    else
+        echo none
+    fi
+}
+
+# First battery with a supported interface, else the first battery at all
+auto_bat() {
+    first=
+    for b in "$PS_DIR"/BAT*; do
+        [ -e "$b" ] || continue
+        n=${b##*/}
+        [ -n "$first" ] || first=$n
+        [ "$(backend_of "$n")" != none ] && { echo "$n"; return; }
+    done
+    echo "${first:-BAT0}"
+}
+
+# Parse the config as plain KEY=value lines. Never sourced: it is read by
+# root at boot, so anything that isn't a known key with a valid value is
+# ignored.
+load_conf() {
+    MODE=
+    START=
+    END=
+    CONF_BAT=
+    if [ -r "$CONF" ]; then
+        while IFS='=' read -r k v; do
+            case $k in
+                MODE)  case $v in save|balanced|full|custom) MODE=$v ;; esac ;;
+                START) is_pct "$v" && START=$v ;;
+                END)   is_pct "$v" && END=$v ;;
+                BAT)   case $v in BAT|BAT*[!A-Za-z0-9_]*) ;; BAT*) CONF_BAT=$v ;; esac ;;
+            esac
+        done < "$CONF"
+    fi
+    BAT=${CONF_BAT:-$(auto_bat)}
+    BAT_PATH="$PS_DIR/$BAT"
+    START_FILE="$BAT_PATH/charge_control_start_threshold"
+    END_FILE="$BAT_PATH/charge_control_end_threshold"
+    TYPES_FILE="$BAT_PATH/charge_types"
+    BACKEND=$(backend_of "$BAT")
+}
+
+save_conf() {
+    tmp="$CONF.tmp.$$"
+    {
+        echo "# battery-mode persistent state (written by battery-mode)"
+        echo "MODE=$1"
+        [ -z "$2" ] || echo "START=$2"
+        [ -z "$3" ] || echo "END=$3"
+        echo "BAT=$BAT"
+    } > "$tmp" 2>/dev/null && mv -f "$tmp" "$CONF" || {
+        rm -f "$tmp"
+        die 1 "applied, but could not save $CONF; the mode won't survive a reboot"
+    }
+}
+
+check_support() {
+    [ "$BACKEND" != none ] && return
+    if [ ! -e "$BAT_PATH" ]; then
+        die 2 "no battery found at $BAT_PATH"
+    fi
+    die 2 "$BAT doesn't expose a charge-limit interface." \
+        "  Looked for $END_FILE" \
+        "  and a Long_Life option in $TYPES_FILE." \
+        "  Your laptop or kernel driver may not support charge limits."
+}
+
+check_writable() {
+    if [ "$BACKEND" = thresholds ]; then f=$END_FILE; else f=$TYPES_FILE; fi
+    [ -w "$f" ] || die 1 "need write access to $f (run with sudo)"
+}
+
+write_sysfs() {
+    { echo "$2" > "$1"; } 2>/dev/null || die 1 "kernel rejected '$2' for $1"
+}
+
+apply_thresholds() {
+    s=$1
+    e=$2
+    # Order matters: the kernel rejects a transient start >= end
+    cur_end=$(cat "$END_FILE" 2>/dev/null || echo 100)
+    if [ -e "$START_FILE" ] && [ "$s" -lt "$cur_end" ]; then
+        write_sysfs "$START_FILE" "$s"
+        write_sysfs "$END_FILE" "$e"
+    else
+        write_sysfs "$END_FILE" "$e"
+        [ ! -e "$START_FILE" ] || write_sysfs "$START_FILE" "$s"
+    fi
+}
+
+# Map a mode to a charge_types value; sets TYPE (no subshell, so die exits)
+types_for_mode() {
+    case $1 in
+        save) TYPE=Long_Life ;;
+        full) TYPE=Standard ;;
+        *) die 2 "'$1' needs numeric thresholds, which $BAT doesn't support." \
+               "  This battery offers only: save (conservation on), full (off)." ;;
+    esac
+}
+
+# Apply a mode. Args: name start end
+set_mode() {
+    check_support
+    check_writable
+    if [ "$BACKEND" = thresholds ]; then
+        apply_thresholds "$2" "$3"
+        save_conf "$1" "$2" "$3"
+    else
+        types_for_mode "$1"
+        write_sysfs "$TYPES_FILE" "$TYPE"
+        save_conf "$1" "" ""
+    fi
+}
+
+current_limits() {
+    if [ "$BACKEND" = thresholds ]; then
+        s=$(cat "$START_FILE" 2>/dev/null || echo "?")
+        e=$(cat "$END_FILE" 2>/dev/null || echo "?")
+        echo "${s}%-${e}%"
+    else
+        t=$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$TYPES_FILE" 2>/dev/null)
+        case $t in
+            Long_Life) echo "conservation on (Long_Life, firmware-set cap)" ;;
+            Standard)  echo "conservation off (Standard, charges to 100%)" ;;
+            *)         echo "${t:-?}" ;;
+        esac
+    fi
+}
+
+# Print TLP charge-threshold settings that would fight with battery-mode
+tlp_conflicts() {
+    for f in /etc/tlp.conf /etc/tlp.d/*.conf; do
+        [ -r "$f" ] || continue
+        grep -E '^[[:space:]]*(START|STOP)_CHARGE_THRESH_' "$f" 2>/dev/null \
+            | sed "s|^|  $f: |"
+    done
+}
+
+cmd_mode() {
+    set_mode "$1" "$2" "$3"
+    if [ "$BACKEND" = thresholds ]; then
+        echo "battery-mode: $1 (${2}%-${3}%) — $4"
+    else
+        echo "battery-mode: $1 — $(current_limits)"
+    fi
+}
+
+cmd_custom() {
+    [ $# -eq 2 ] || die 1 "custom mode needs two numbers: start end"
+    is_pct "$1" && is_pct "$2" || die 1 "thresholds must be integers 0-100"
+    [ "$1" -lt "$2" ] || die 1 "start ($1) must be less than end ($2)"
+    set_mode custom "$1" "$2"
+    echo "battery-mode: custom (${1}%-${2}%)"
+}
+
+cmd_status() {
+    check_support
+    pct=$(cat "$BAT_PATH/capacity" 2>/dev/null || echo "?")
+    st=$(cat "$BAT_PATH/status" 2>/dev/null || echo "?")
+    echo "Battery:   $BAT ($BACKEND)"
+    echo "Charge:    ${pct}% [${st}]"
+    echo "Limits:    $(current_limits)"
+    echo "Mode:      ${MODE:-unset}"
+    others=
+    for b in "$PS_DIR"/BAT*; do
+        n=${b##*/}
+        [ -e "$b" ] && [ "$n" != "$BAT" ] && others="$others $n($(backend_of "$n"))"
+    done
+    [ -z "$others" ] || echo "Others:   $others (set BAT=<name> in $CONF to switch)"
+    c=$(tlp_conflicts)
+    if [ -n "$c" ]; then
+        echo
+        echo "Warning: TLP also sets charge thresholds and will override battery-mode:"
+        echo "$c"
+        echo "  Comment these out to let battery-mode manage charging."
+    fi
+}
+
+cmd_restore() {
+    if [ -z "$MODE" ]; then
+        echo "battery-mode: no saved state at $CONF, nothing to restore" >&2
+        exit 0
+    fi
+    check_support
+    check_writable
+    if [ "$BACKEND" = thresholds ]; then
+        case $MODE in
+            save)     START=40 END=80 ;;
+            balanced) START=60 END=90 ;;
+            full)     START=0  END=100 ;;
+        esac
+        [ -n "$START" ] && [ -n "$END" ] || die 1 "saved custom mode in $CONF is missing START/END"
+        apply_thresholds "$START" "$END"
+        echo "battery-mode: restored $MODE (${START}%-${END}%)"
+    else
+        types_for_mode "$MODE"
+        write_sysfs "$TYPES_FILE" "$TYPE"
+        echo "battery-mode: restored $MODE — $(current_limits)"
+    fi
+}
+
+cmd_help() {
+    cat <<EOF
+battery-mode — manage laptop battery charge limits
+
+Usage: battery-mode [command]
+
+Named modes:
+  save        40%-80%   long battery life (recommended for mostly-plugged use)
+  balanced    60%-90%   good life, more capacity when unplugged
+  full        0%-100%   max capacity, use before travel
+
+Other:
+  status      show current limits, battery level, and saved mode
+  restore     re-apply the saved mode (used by the systemd unit at boot)
+  N M         custom start% and end% (e.g. battery-mode 50 85)
+  help        this message
+
+Batteries with on/off conservation mode only (e.g. Lenovo IdeaPad) support
+'save' (conservation on, firmware-set cap) and 'full' (off).
+
+Config:  $CONF
+EOF
+}
+
+case "${1:-status}" in
+    help|-h|--help) cmd_help; exit 0 ;;
+esac
+
+load_conf
+
+case "${1:-status}" in
+    save)     cmd_mode save     40  80 "long battery life" ;;
+    balanced) cmd_mode balanced 60  90 "good life, more capacity on battery" ;;
+    full)     cmd_mode full      0 100 "max capacity, faster wear" ;;
+    status)   cmd_status ;;
+    restore)  cmd_restore ;;
+    [0-9]*)   cmd_custom "$@" ;;
+    *)        die 1 "unknown command: $1" "Try: battery-mode help" ;;
+esac

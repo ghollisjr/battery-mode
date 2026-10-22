@@ -1,0 +1,4 @@
+# Allow members of the 'wheel' group to run battery-mode without a password.
+# Install at /etc/sudoers.d/battery-mode (mode 0440).
+# Edit the group name if you prefer a different one.
+%wheel ALL=(root) NOPASSWD: /usr/bin/battery-mode
