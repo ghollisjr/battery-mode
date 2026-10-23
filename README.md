@@ -1,7 +1,7 @@
 # battery-mode
 
 Named charge-limit presets for laptop batteries, with persistent state
-across reboots. One command to switch between "save battery life", "balanced",
+across reboots. One command to switch between "conserve" (long battery life), "balanced",
 and "full capacity" modes.
 
 Works with either of the kernel's two charge-limit interfaces, detected
@@ -10,7 +10,7 @@ automatically:
 - **Numeric thresholds** (`charge_control_{start,end}_threshold`) — most
   ThinkPads, Framework, many ASUS. All modes available.
 - **Conservation mode** (`charge_types` with `Long_Life`) — Lenovo
-  IdeaPad/Yoga and others where the firmware only offers on/off. `save` turns
+  IdeaPad/Yoga and others where the firmware only offers on/off. `conserve` turns
   conservation on (the firmware picks the cap, typically 60–80%); `full` turns
   it off. `balanced` and custom percentages aren't possible on this hardware.
 
@@ -38,7 +38,7 @@ Then:
 
 ```
 sudo systemctl enable --now battery-mode-restore.service
-sudo battery-mode save
+sudo battery-mode conserve
 ```
 
 ### From source
@@ -56,7 +56,7 @@ sudo systemctl enable --now battery-mode-restore.service
 ## Usage
 
 ```
-battery-mode save       # 40%-80%, long battery life (recommended for plugged-in use)
+battery-mode conserve   # 40%-80%, long battery life (recommended for plugged-in use)
 battery-mode balanced   # 60%-90%, good life + more usable capacity when unplugged
 battery-mode full       # 0%-100%, max capacity, use before travel
 battery-mode 50 85      # custom start% and end%
@@ -64,7 +64,13 @@ battery-mode status     # show current thresholds, battery level, saved mode
 battery-mode help       # usage summary
 ```
 
+Each mode change is remembered and reapplied at boot. `battery-mode reapply`
+does that by hand; you'll rarely need it.
+
 `status` works without sudo; everything else needs root (or the sudoers rule).
+
+Version 0.1.0 called `conserve` and `reapply` `save` and `restore`. The old
+names still work.
 
 On multi-battery systems the first supported `BAT*` is used; `status` lists
 the others. To pick one explicitly, set `BAT=BAT1` in `/etc/battery-mode.conf`.
@@ -74,19 +80,19 @@ the others. To pick one explicitly, set `BAT=BAT1` in `/etc/battery-mode.conf`.
 - Writing to `/sys/class/power_supply/BAT*/charge_control_{start,end}_threshold`
   tells the EC when to stop and resume charging (or, on conservation-mode
   hardware, writing `Long_Life`/`Standard` to `charge_types`).
-- The chosen mode is saved to `/etc/battery-mode.conf`.
-- `battery-mode-restore.service` runs at boot and reapplies the saved mode,
-  because sysfs values reset on power cycle.
+- Every mode change is saved to `/etc/battery-mode.conf` automatically.
+- `battery-mode-restore.service` runs `battery-mode reapply` at boot to set
+  that mode again, because sysfs values reset on power cycle.
 
 ## Modes rationale
 
 | Mode | Start | End | When to use |
 |------|------:|----:|-------------|
-| save | 40 | 80 | Mostly plugged in. Battery held at 80%, waits until 40% to resume charging (fewer small cycles). |
+| conserve | 40 | 80 | Mostly plugged in. Battery held at 80%, waits until 40% to resume charging (fewer small cycles). |
 | balanced | 60 | 90 | Mixed use. Shorter unplug tolerance, but 90% available when you need it. |
 | full | 0 | 100 | Before travel or extended portable use. |
 
-The 40-point gap in `save` prevents a charge cycle every time you briefly
+The 40-point gap in `conserve` prevents a charge cycle every time you briefly
 unplug. If you unplug for 20 minutes to grab coffee and come back, nothing
 re-charges — only if you actually drain the battery below 40%.
 
@@ -126,8 +132,8 @@ warns if it finds any active.
 Add to `~/.config/quickkey/config`:
 
 ```ini
-[Battery: Save]
-command = sudo battery-mode save && battery-mode status
+[Battery: Conserve]
+command = sudo battery-mode conserve && battery-mode status
 
 [Battery: Balanced]
 command = sudo battery-mode balanced && battery-mode status

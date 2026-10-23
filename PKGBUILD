@@ -1,8 +1,8 @@
 # Maintainer: Gary Hollis <ghollisjr@gmail.com>
 pkgname=battery-mode
-pkgver=0.1.0
-pkgrel=2
-pkgdesc="Named charge-limit modes for laptop batteries (save/balanced/full), persistent across reboots"
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="Named charge-limit modes for laptop batteries (conserve/balanced/full), persistent across reboots"
 arch=('any')
 url="https://github.com/ghollisjr/battery-mode"
 license=('MIT')

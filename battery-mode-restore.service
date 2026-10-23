@@ -1,11 +1,11 @@
 [Unit]
-Description=Restore battery charge thresholds from saved mode
+Description=Reapply the last-set battery charge mode
 After=multi-user.target
 ConditionPathExists=/etc/battery-mode.conf
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/battery-mode restore
+ExecStart=/usr/bin/battery-mode reapply
 RemainAfterExit=yes
 
 [Install]

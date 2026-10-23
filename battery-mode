@@ -10,13 +10,15 @@
 #               Lenovo IdeaPad/Yoga (ideapad_laptop), some others.
 #
 # Modes:
-#   save      40%-80%   long battery life   (types: Long_Life)
+#   conserve  40%-80%   long battery life   (types: Long_Life)
 #   balanced  60%-90%   more capacity       (thresholds only)
 #   full      0%-100%   max capacity        (types: Standard)
 #   N M       custom start/end percentages  (thresholds only)
 #
-# Settings persist via /etc/battery-mode.conf, restored by
-# battery-mode-restore.service at boot.
+# Every mode change is saved to /etc/battery-mode.conf and reapplied at boot
+# by battery-mode-restore.service (via `battery-mode reapply`).
+#
+# 0.1.0 called these `save` and `restore`; both still work as aliases.
 
 set -eu
 
@@ -70,7 +72,10 @@ load_conf() {
     if [ -r "$CONF" ]; then
         while IFS='=' read -r k v; do
             case $k in
-                MODE)  case $v in save|balanced|full|custom) MODE=$v ;; esac ;;
+                MODE)  case $v in
+                           save) MODE=conserve ;;  # 0.1.0 name
+                           conserve|balanced|full|custom) MODE=$v ;;
+                       esac ;;
                 START) is_pct "$v" && START=$v ;;
                 END)   is_pct "$v" && END=$v ;;
                 BAT)   case $v in BAT|BAT*[!A-Za-z0-9_]*) ;; BAT*) CONF_BAT=$v ;; esac ;;
@@ -136,10 +141,10 @@ apply_thresholds() {
 # Map a mode to a charge_types value; sets TYPE (no subshell, so die exits)
 types_for_mode() {
     case $1 in
-        save) TYPE=Long_Life ;;
+        conserve) TYPE=Long_Life ;;
         full) TYPE=Standard ;;
         *) die 2 "'$1' needs numeric thresholds, which $BAT doesn't support." \
-               "  This battery offers only: save (conservation on), full (off)." ;;
+               "  This battery offers only: conserve (conservation on), full (off)." ;;
     esac
 }
 
@@ -221,26 +226,26 @@ cmd_status() {
     fi
 }
 
-cmd_restore() {
+cmd_reapply() {
     if [ -z "$MODE" ]; then
-        echo "battery-mode: no saved state at $CONF, nothing to restore" >&2
+        echo "battery-mode: no saved state at $CONF, nothing to reapply" >&2
         exit 0
     fi
     check_support
     check_writable
     if [ "$BACKEND" = thresholds ]; then
         case $MODE in
-            save)     START=40 END=80 ;;
+            conserve) START=40 END=80 ;;
             balanced) START=60 END=90 ;;
             full)     START=0  END=100 ;;
         esac
         [ -n "$START" ] && [ -n "$END" ] || die 1 "saved custom mode in $CONF is missing START/END"
         apply_thresholds "$START" "$END"
-        echo "battery-mode: restored $MODE (${START}%-${END}%)"
+        echo "battery-mode: reapplied $MODE (${START}%-${END}%)"
     else
         types_for_mode "$MODE"
         write_sysfs "$TYPES_FILE" "$TYPE"
-        echo "battery-mode: restored $MODE — $(current_limits)"
+        echo "battery-mode: reapplied $MODE — $(current_limits)"
     fi
 }
 
@@ -251,18 +256,20 @@ battery-mode — manage laptop battery charge limits
 Usage: battery-mode [command]
 
 Named modes:
-  save        40%-80%   long battery life (recommended for mostly-plugged use)
+  conserve    40%-80%   long battery life (recommended for mostly-plugged use)
   balanced    60%-90%   good life, more capacity when unplugged
   full        0%-100%   max capacity, use before travel
 
 Other:
   status      show current limits, battery level, and saved mode
-  restore     re-apply the saved mode (used by the systemd unit at boot)
+  reapply     apply the last-set mode again (run by the systemd unit at boot)
   N M         custom start% and end% (e.g. battery-mode 50 85)
   help        this message
 
 Batteries with on/off conservation mode only (e.g. Lenovo IdeaPad) support
-'save' (conservation on, firmware-set cap) and 'full' (off).
+'conserve' (conservation on, firmware-set cap) and 'full' (off).
+
+Every mode change is remembered and reapplied at boot.
 
 Config:  $CONF
 EOF
@@ -275,11 +282,11 @@ esac
 load_conf
 
 case "${1:-status}" in
-    save)     cmd_mode save     40  80 "long battery life" ;;
-    balanced) cmd_mode balanced 60  90 "good life, more capacity on battery" ;;
-    full)     cmd_mode full      0 100 "max capacity, faster wear" ;;
-    status)   cmd_status ;;
-    restore)  cmd_restore ;;
-    [0-9]*)   cmd_custom "$@" ;;
-    *)        die 1 "unknown command: $1" "Try: battery-mode help" ;;
+    conserve|save)   cmd_mode conserve 40  80 "long battery life" ;;
+    balanced)        cmd_mode balanced 60  90 "good life, more capacity on battery" ;;
+    full)            cmd_mode full      0 100 "max capacity, faster wear" ;;
+    status)          cmd_status ;;
+    reapply|restore) cmd_reapply ;;
+    [0-9]*)          cmd_custom "$@" ;;
+    *)               die 1 "unknown command: $1" "Try: battery-mode help" ;;
 esac
