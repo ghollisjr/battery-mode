@@ -1,0 +1,14 @@
+#compdef battery-mode
+# zsh completion for battery-mode
+
+local -a commands
+commands=(
+    'conserve:40%-80%, long battery life'
+    'balanced:60%-90%, more capacity when unplugged'
+    'full:0%-100%, max capacity'
+    'status:show current limits and saved mode'
+    'reapply:apply the last-set mode again'
+    'help:show usage'
+)
+
+(( CURRENT == 2 )) && _describe 'battery-mode command' commands

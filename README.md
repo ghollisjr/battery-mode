@@ -49,6 +49,8 @@ cd battery-mode
 sudo install -Dm0755 battery-mode                 /usr/bin/battery-mode
 sudo install -Dm0644 battery-mode-restore.service /usr/lib/systemd/system/battery-mode-restore.service
 sudo install -Dm0440 battery-mode.sudoers         /etc/sudoers.d/battery-mode
+sudo install -Dm0644 completions/battery-mode.bash /usr/share/bash-completion/completions/battery-mode
+sudo install -Dm0644 completions/_battery-mode     /usr/share/zsh/site-functions/_battery-mode
 sudo systemctl daemon-reload
 sudo systemctl enable --now battery-mode-restore.service
 ```
@@ -66,6 +68,8 @@ battery-mode help       # usage summary
 
 Each mode change is remembered and reapplied at boot. `battery-mode reapply`
 does that by hand; you'll rarely need it.
+
+Tab completion for the commands is included for bash and zsh.
 
 `status` works without sudo; everything else needs root (or the sudoers rule).
 
